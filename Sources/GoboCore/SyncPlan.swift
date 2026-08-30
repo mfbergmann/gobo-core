@@ -25,6 +25,9 @@ public struct SyncPlan: Codable, Sendable, Equatable {
     /// look like an orphan, and a transient identifier change (an account
     /// re-add) must not wipe the target calendar.
     public var deletesSuppressed: Bool
+    /// How many mirror blocks will exist within the window once this plan is
+    /// applied (created + kept). Zero for purge plans.
+    public var managedCount: Int
 
     public var isEmpty: Bool {
         creates.isEmpty && updates.isEmpty && deletes.isEmpty
@@ -43,7 +46,8 @@ public struct SyncPlan: Codable, Sendable, Equatable {
         deletes: [Delete] = [],
         excluded: [ExcludedEvent] = [],
         warnings: [PlanWarning] = [],
-        deletesSuppressed: Bool = false
+        deletesSuppressed: Bool = false,
+        managedCount: Int = 0
     ) {
         self.ruleID = ruleID
         self.targetCalendarID = targetCalendarID
@@ -54,6 +58,7 @@ public struct SyncPlan: Codable, Sendable, Equatable {
         self.excluded = excluded
         self.warnings = warnings
         self.deletesSuppressed = deletesSuppressed
+        self.managedCount = managedCount
     }
 
     public struct Create: Codable, Sendable, Hashable {

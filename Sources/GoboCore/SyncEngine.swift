@@ -234,7 +234,8 @@ public struct SyncEngine {
             deletes: deletes,
             excluded: excluded,
             warnings: warnings,
-            deletesSuppressed: deletesSuppressed
+            deletesSuppressed: deletesSuppressed,
+            managedCount: desired.count
         )
     }
 
