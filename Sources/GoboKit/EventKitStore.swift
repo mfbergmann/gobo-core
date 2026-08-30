@@ -17,6 +17,11 @@ public enum EventKitStoreError: Error {
     /// occurrences share one identifier, so a single-event write would hit
     /// the wrong occurrence. Regular sync must never send these.
     case refusingRecurringEvent(String)
+    /// setAvailability was pointed at a mirror block. Mirrors are always
+    /// Busy; flip the source event instead.
+    case refusingMirror(String)
+    /// The event's calendar does not support the Busy/Free flag at all.
+    case availabilityNotSupportedByCalendar(String)
 }
 
 /// `CalendarStore` backed by the user's local EventKit database. This is the
@@ -109,6 +114,47 @@ public final class EventKitStore: CalendarStore, @unchecked Sendable {
         // event(withIdentifier:) returns the series' first occurrence;
         // removing with .futureEvents from there deletes the entire series.
         try store.remove(event, span: .futureEvents, commit: false)
+    }
+
+    // MARK: - Source-event availability
+
+    /// Writes the Busy/Free flag on one of the user's own events, addressed
+    /// as a specific occurrence by (identifier, start).
+    ///
+    /// This is deliberately the ONLY write Gobo ever makes to a source
+    /// calendar, and it exists because Apple's Calendar app stopped exposing
+    /// the "Show As: Busy/Free" control for iCloud events — leaving Gobo's
+    /// primary filter unreachable for exactly the users it targets. It is
+    /// fully separate from the mirror engine's write path: it refuses to
+    /// touch mirror blocks, does not carry any content anywhere, and edits a
+    /// recurring occurrence in place (detaching just that occurrence), so
+    /// "mark this Tuesday's instance Free" means exactly that.
+    public func setAvailability(
+        eventIdentifier: String,
+        start: Date,
+        to availability: EventAvailability
+    ) throws {
+        let predicate = store.predicateForEvents(
+            withStart: start.addingTimeInterval(-2),
+            end: start.addingTimeInterval(2),
+            calendars: nil
+        )
+        guard let event = store.events(matching: predicate).first(where: {
+            $0.eventIdentifier == eventIdentifier
+                && abs($0.startDate.timeIntervalSince(start)) < 2
+        }) else {
+            throw EventKitStoreError.eventNotFound(eventIdentifier)
+        }
+        if MirrorIdentity.containsAnyVersionMarker(event.notes) {
+            throw EventKitStoreError.refusingMirror(eventIdentifier)
+        }
+        guard let calendar = event.calendar, !calendar.supportedEventAvailabilities.isEmpty else {
+            throw EventKitStoreError.availabilityNotSupportedByCalendar(event.calendar?.title ?? eventIdentifier)
+        }
+        let desired: EKEventAvailability = (availability == .free) ? .free : .busy
+        guard event.availability != desired else { return }
+        event.availability = desired
+        try store.save(event, span: .thisEvent, commit: true)
     }
 
     /// Resolves an identifier the engine believes names one of our mirrors,
