@@ -130,6 +130,73 @@ struct ReconciliationTests {
         #expect(try s.plan().isEmpty)
     }
 
+    @Test("Duplicate cleanup and a keeper update in the same plan")
+    func duplicateCleanupWithKeeperUpdate() throws {
+        let s = Scenario(buffers: BufferSettings(beforeMinutes: 0, afterMinutes: 0))
+        s.store.seedEvent(
+            id: "src", calendarID: s.personal.id, title: "Dentist",
+            start: at(2026, 6, 16, 9, 0), end: at(2026, 6, 16, 10, 0)
+        )
+        let marker = MirrorIdentity.marker(for: s.store.event(id: "src")!.asSourceEvent())
+        let notes = MirrorIdentity.canonicalNotes(marker: marker)
+        // Three duplicates, all at the WRONG time, so the keeper also needs
+        // an update in the same plan.
+        for dupID in ["mirror-b", "mirror-a", "mirror-c"] {
+            s.store.seedEvent(
+                id: dupID, calendarID: s.work.id, title: "Busy",
+                start: at(2026, 6, 16, 11, 0), end: at(2026, 6, 16, 12, 0),
+                notes: notes
+            )
+        }
+        let plan = try s.plan()
+        #expect(plan.creates.isEmpty)
+        #expect(Set(plan.deletes.map(\.mirrorID)) == ["mirror-b", "mirror-c"])
+        #expect(plan.deletes.allSatisfy { $0.reason == .duplicate })
+        #expect(plan.updates.map(\.mirrorID) == ["mirror-a"])
+        #expect(plan.updates.first?.reasons == [.timeChanged])
+        try s.engine.apply(plan)
+        let survivors = s.store.markedEvents(inCalendar: s.work.id)
+        #expect(survivors.map(\.id) == ["mirror-a"])
+        #expect(survivors.first?.start == at(2026, 6, 16, 9, 0))
+        #expect(try s.plan().isEmpty)
+    }
+
+    @Test("A mirror the user made recurring is left alone, with a loud warning")
+    func recurringMirrorIgnored() throws {
+        let s = Scenario(buffers: BufferSettings(beforeMinutes: 0, afterMinutes: 0))
+        s.store.seedEvent(
+            id: "src", calendarID: s.personal.id, title: "Dentist",
+            start: at(2026, 6, 16, 9, 0), end: at(2026, 6, 16, 10, 0)
+        )
+        let marker = MirrorIdentity.marker(for: s.store.event(id: "src")!.asSourceEvent())
+        let notes = MirrorIdentity.canonicalNotes(marker: marker)
+        // The user opened the mirror in Calendar and made it repeat weekly:
+        // three occurrences sharing one identifier, marker copied to each.
+        for (index, day) in [16, 23, 30].enumerated() {
+            s.store.seedEvent(
+                id: "rec-occ-\(index)", eventIdentifier: "recurring-mirror",
+                calendarID: s.work.id, title: "Busy",
+                start: at(2026, 6, day, 9, 0), end: at(2026, 6, day, 10, 0),
+                occurrenceDate: at(2026, 6, day, 9, 0),
+                notes: notes
+            )
+        }
+        let plan = try s.plan()
+        // The series is never targeted by deletes or updates...
+        #expect(plan.deletes.isEmpty)
+        #expect(plan.updates.isEmpty)
+        #expect(plan.warnings.contains(.recurringMirrorsIgnored(seriesCount: 1)))
+        // ...and since the series cannot be adopted as the keeper, a fresh
+        // proper mirror is created for the source event.
+        #expect(plan.creates.count == 1)
+        try s.engine.apply(plan)
+        // The whole state is stable on the next run.
+        let second = try s.plan()
+        #expect(second.isEmpty)
+        #expect(second.warnings.contains(.recurringMirrorsIgnored(seriesCount: 1)))
+        #expect(s.store.events(inCalendar: s.work.id).count == 4)
+    }
+
     @Test("A target that does not support availability does not churn updates forever")
     func notSupportedTargetNoChurn() throws {
         let s = Scenario(targetSupportsAvailability: false)

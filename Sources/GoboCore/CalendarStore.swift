@@ -28,6 +28,12 @@ public protocol CalendarStore {
 
     func delete(id: String) throws
 
+    /// Deletes an entire recurring series by its shared identifier. Only the
+    /// explicit purge path uses this; regular sync never touches recurring
+    /// events on the target. Defaults to `delete(id:)` for stores without
+    /// recurrence.
+    func deleteSeries(id: String) throws
+
     /// Flushes pending writes as one batch, so a failure part-way does not
     /// leave the target calendar half-updated. Stores without batch
     /// semantics may treat every write as immediate.
@@ -38,6 +44,10 @@ public protocol CalendarStore {
 }
 
 public extension CalendarStore {
+    func deleteSeries(id: String) throws {
+        try delete(id: id)
+    }
+
     func commit() throws {}
     func rollback() {}
 }

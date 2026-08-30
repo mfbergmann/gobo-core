@@ -8,6 +8,8 @@ import Foundation
 enum FakeStoreError: Error, Equatable {
     case noSuchEvent(String)
     case injectedFailure(String)
+    case refusingUnmarkedEvent(String)
+    case refusingRecurringEvent(String)
 }
 
 /// In-memory CalendarStore with EventKit-like semantics: overlap-based range
@@ -66,6 +68,10 @@ final class FakeCalendarStore: CalendarStore {
 
     func seedCalendar(_ ref: CalendarRef) {
         calendarsList.append(ref)
+    }
+
+    func removeCalendar(id: String) {
+        calendarsList.removeAll { $0.id == id }
     }
 
     @discardableResult
@@ -163,9 +169,7 @@ final class FakeCalendarStore: CalendarStore {
     func update(id: String, to mirror: MirrorSpec) throws {
         try maybeFail("update")
         beginWriteIfNeeded()
-        guard let index = storedEvents.firstIndex(where: { $0.id == id }) else {
-            throw FakeStoreError.noSuchEvent(id)
-        }
+        let index = try managedSingleIndex(id: id)
         storedEvents[index].title = mirror.title
         storedEvents[index].start = mirror.start
         storedEvents[index].end = mirror.end
@@ -182,11 +186,42 @@ final class FakeCalendarStore: CalendarStore {
     func delete(id: String) throws {
         try maybeFail("delete")
         beginWriteIfNeeded()
-        guard storedEvents.contains(where: { $0.id == id }) else {
+        let index = try managedSingleIndex(id: id)
+        let removedID = storedEvents[index].id
+        storedEvents.remove(at: index)
+        opLog.append("delete \(removedID)")
+    }
+
+    func deleteSeries(id: String) throws {
+        try maybeFail("deleteSeries")
+        beginWriteIfNeeded()
+        let matches = storedEvents.filter { $0.eventIdentifier == id }
+        guard !matches.isEmpty else {
             throw FakeStoreError.noSuchEvent(id)
         }
-        storedEvents.removeAll { $0.id == id }
-        opLog.append("delete \(id)")
+        guard matches.contains(where: { MirrorIdentity.containsAnyVersionMarker($0.notes) }) else {
+            throw FakeStoreError.refusingUnmarkedEvent(id)
+        }
+        storedEvents.removeAll { $0.eventIdentifier == id }
+        opLog.append("deleteSeries \(id)")
+    }
+
+    /// Mimics EventKit: identifiers resolve via eventIdentifier, a recurring
+    /// series shares one, and lookup lands on the earliest occurrence. The
+    /// same refusal guards as EventKitStore keep engine invariants honest in
+    /// tests.
+    private func managedSingleIndex(id: String) throws -> Int {
+        let matches = storedEvents.indices.filter { storedEvents[$0].eventIdentifier == id }
+        guard let index = matches.min(by: { storedEvents[$0].start < storedEvents[$1].start }) else {
+            throw FakeStoreError.noSuchEvent(id)
+        }
+        guard MirrorIdentity.containsAnyVersionMarker(storedEvents[index].notes) else {
+            throw FakeStoreError.refusingUnmarkedEvent(id)
+        }
+        guard storedEvents[index].occurrenceDate == nil, matches.count == 1 else {
+            throw FakeStoreError.refusingRecurringEvent(id)
+        }
+        return index
     }
 
     func commit() throws {

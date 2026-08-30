@@ -98,6 +98,24 @@ struct IdempotenceTests {
             start: at(2026, 6, 17, 9, 0), end: at(2026, 6, 17, 10, 0),
             notes: MirrorIdentity.canonicalNotes(marker: MirrorIdentity.marker(for: phantom))
         )
+        // Sometimes, a mirror the user made recurring: it must be ignored
+        // (with a warning) and never destabilize the plan.
+        if Bool.random(using: &rng) {
+            let ghost = SourceEvent(
+                eventIdentifier: "rec-phantom-\(seed)", calendarID: s.personal.id,
+                start: at(2026, 6, 18, 9, 0), end: at(2026, 6, 18, 10, 0)
+            )
+            let notes = MirrorIdentity.canonicalNotes(marker: MirrorIdentity.marker(for: ghost))
+            for occurrence in 0..<3 {
+                let start = at(2026, 6, 18 + 7 * occurrence, 9, 0)
+                s.store.seedEvent(
+                    eventIdentifier: "recurring-mirror-\(seed)",
+                    calendarID: s.work.id, title: "Busy",
+                    start: start, end: start.addingTimeInterval(3600),
+                    occurrenceDate: start, notes: notes
+                )
+            }
+        }
 
         let first = try s.plan()
         #expect(!first.deletesSuppressed)

@@ -131,10 +131,19 @@ public struct SyncEngine {
 
         var singles: [MirrorMarker: [SourceEvent]] = [:]
         var deletes: [SyncPlan.Delete] = []
+        var recurringSeriesIgnored: Set<String> = []
         for event in targetEvents {
             let markers = MirrorIdentity.markers(inNotes: event.notes)
             if markers.isEmpty {
                 continue // Never touch an unmarked event. Ever.
+            }
+            if event.occurrenceDate != nil {
+                // The user opened a mirror in Calendar and made it repeat:
+                // every occurrence now carries the marker but they all share
+                // one event identifier, so per-event update/delete cannot
+                // address them safely. Leave the series alone and say so.
+                recurringSeriesIgnored.insert(event.eventIdentifier)
+                continue
             }
             if markers.count > 1 {
                 deletes.append(SyncPlan.Delete(
@@ -214,6 +223,10 @@ public struct SyncEngine {
             }
         }
 
+        if !recurringSeriesIgnored.isEmpty {
+            warnings.append(.recurringMirrorsIgnored(seriesCount: recurringSeriesIgnored.count))
+        }
+
         var deletesSuppressed = false
         if anySourceMissing && !deletes.isEmpty {
             deletes = []
@@ -248,13 +261,27 @@ public struct SyncEngine {
         var deletes: [SyncPlan.Delete] = []
         if !targets.isEmpty {
             let events = try store.events(in: targets, from: from, to: to)
+            var seriesSeen: Set<String> = []
             for event in events where MirrorIdentity.containsAnyVersionMarker(event.notes) {
-                deletes.append(SyncPlan.Delete(
-                    mirrorID: event.eventIdentifier,
-                    start: event.start,
-                    end: event.end,
-                    reason: .purged
-                ))
+                if event.occurrenceDate != nil {
+                    // A mirror the user made recurring: all occurrences share
+                    // one identifier, so emit a single whole-series delete.
+                    guard seriesSeen.insert(event.eventIdentifier).inserted else { continue }
+                    deletes.append(SyncPlan.Delete(
+                        mirrorID: event.eventIdentifier,
+                        start: event.start,
+                        end: event.end,
+                        reason: .purged,
+                        scope: .series
+                    ))
+                } else {
+                    deletes.append(SyncPlan.Delete(
+                        mirrorID: event.eventIdentifier,
+                        start: event.start,
+                        end: event.end,
+                        reason: .purged
+                    ))
+                }
             }
         }
         deletes.sort { ($0.start, $0.mirrorID) < ($1.start, $1.mirrorID) }
@@ -275,7 +302,12 @@ public struct SyncEngine {
         var result = ApplyResult()
         do {
             for delete in plan.deletes {
-                try store.delete(id: delete.mirrorID)
+                switch delete.scope {
+                case .single:
+                    try store.delete(id: delete.mirrorID)
+                case .series:
+                    try store.deleteSeries(id: delete.mirrorID)
+                }
                 result.deleted += 1
             }
             for update in plan.updates {

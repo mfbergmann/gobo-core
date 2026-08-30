@@ -15,16 +15,18 @@ public enum RuleValidationIssue: Codable, Sendable, Hashable {
     /// This rule's target is a source of another rule, or vice versa —
     /// mirrors would be re-mirrored.
     case crossRuleLoop(otherRuleID: UUID, calendar: CalendarHandle)
-    /// Two rules mirror an overlapping source set into the same target; their
-    /// plans would fight over the same markers and churn.
-    case overlappingRules(otherRuleID: UUID, calendar: CalendarHandle)
+    /// Two rules write into the same target calendar. The engine reconciles
+    /// a target against a single rule's desired set, so a second rule's
+    /// mirrors there would read as orphans and the rules would delete each
+    /// other's blocks on every sync. Many-to-one belongs inside one rule.
+    case duplicateTarget(otherRuleID: UUID, calendar: CalendarHandle)
     case invalidWindow
 
     public var isError: Bool {
         switch self {
         case .emptyName:
             return false
-        case .noSourceCalendars, .targetIsSource, .crossRuleLoop, .overlappingRules, .invalidWindow:
+        case .noSourceCalendars, .targetIsSource, .crossRuleLoop, .duplicateTarget, .invalidWindow:
             return true
         }
     }
@@ -58,13 +60,11 @@ public enum RuleValidator {
             if let clash = rule.sourceCalendars.first(where: { $0.id == other.targetCalendar.id }) {
                 issues.append(.crossRuleLoop(otherRuleID: other.id, calendar: clash))
             }
-            // Same target + shared source: both rules would manage the same
-            // markers, and differing buffers or titles would churn forever.
+            // Same target, full stop — even with disjoint sources. Each
+            // rule's plan claims every marked event on its target, so two
+            // rules there would orphan-delete each other's mirrors forever.
             if other.targetCalendar.id == rule.targetCalendar.id {
-                let otherSourceIDs = Set(other.sourceCalendarIDs)
-                if let shared = rule.sourceCalendars.first(where: { otherSourceIDs.contains($0.id) }) {
-                    issues.append(.overlappingRules(otherRuleID: other.id, calendar: shared))
-                }
+                issues.append(.duplicateTarget(otherRuleID: other.id, calendar: rule.targetCalendar))
             }
         }
         return issues

@@ -9,6 +9,14 @@ import GoboCore
 public enum EventKitStoreError: Error {
     case calendarNotFound(String)
     case eventNotFound(String)
+    /// The event resolved for this identifier carries no busysync marker.
+    /// The store refuses to modify or delete unmarked events — a second line
+    /// of defense behind the engine's own guarantee.
+    case refusingUnmarkedEvent(String)
+    /// The event resolved for this identifier belongs to a recurring series;
+    /// occurrences share one identifier, so a single-event write would hit
+    /// the wrong occurrence. Regular sync must never send these.
+    case refusingRecurringEvent(String)
 }
 
 /// `CalendarStore` backed by the user's local EventKit database. This is the
@@ -49,8 +57,24 @@ public final class EventKitStore: CalendarStore, @unchecked Sendable {
         let ekCalendars = store.calendars(for: .event)
             .filter { wanted.contains($0.calendarIdentifier) }
         guard !ekCalendars.isEmpty else { return [] }
-        let predicate = store.predicateForEvents(withStart: from, end: to, calendars: ekCalendars)
-        return store.events(matching: predicate).compactMap { Self.sourceEvent(from: $0) }
+        // Chunked because predicateForEvents silently truncates spans over
+        // four years; an event straddling a chunk boundary appears in both
+        // chunks, hence the dedup.
+        var results: [SourceEvent] = []
+        var seen = Set<String>()
+        for chunk in DateRangeChunker.chunks(from: from, to: to) {
+            let predicate = store.predicateForEvents(
+                withStart: chunk.lowerBound, end: chunk.upperBound, calendars: ekCalendars
+            )
+            for ekEvent in store.events(matching: predicate) {
+                guard let event = Self.sourceEvent(from: ekEvent) else { continue }
+                let key = "\(event.eventIdentifier)|\(event.start.timeIntervalSinceReferenceDate)|\(event.calendarID)"
+                if seen.insert(key).inserted {
+                    results.append(event)
+                }
+            }
+        }
+        return results
     }
 
     public func create(_ mirror: MirrorSpec, in calendar: CalendarRef) throws -> String {
@@ -65,18 +89,43 @@ public final class EventKitStore: CalendarStore, @unchecked Sendable {
     }
 
     public func update(id: String, to mirror: MirrorSpec) throws {
-        guard let event = store.event(withIdentifier: id) else {
-            throw EventKitStoreError.eventNotFound(id)
-        }
+        let event = try managedSingleEvent(id: id)
         apply(mirror, to: event)
         try store.save(event, span: .thisEvent, commit: false)
     }
 
     public func delete(id: String) throws {
+        let event = try managedSingleEvent(id: id)
+        try store.remove(event, span: .thisEvent, commit: false)
+    }
+
+    public func deleteSeries(id: String) throws {
         guard let event = store.event(withIdentifier: id) else {
             throw EventKitStoreError.eventNotFound(id)
         }
-        try store.remove(event, span: .thisEvent, commit: false)
+        guard MirrorIdentity.containsAnyVersionMarker(event.notes) else {
+            throw EventKitStoreError.refusingUnmarkedEvent(id)
+        }
+        // event(withIdentifier:) returns the series' first occurrence;
+        // removing with .futureEvents from there deletes the entire series.
+        try store.remove(event, span: .futureEvents, commit: false)
+    }
+
+    /// Resolves an identifier the engine believes names one of our mirrors,
+    /// refusing anything unmarked or recurring. Both conditions are engine
+    /// invariants already; enforcing them here means a bug upstream fails
+    /// loudly instead of touching the wrong event on a user's work calendar.
+    private func managedSingleEvent(id: String) throws -> EKEvent {
+        guard let event = store.event(withIdentifier: id) else {
+            throw EventKitStoreError.eventNotFound(id)
+        }
+        guard MirrorIdentity.containsAnyVersionMarker(event.notes) else {
+            throw EventKitStoreError.refusingUnmarkedEvent(id)
+        }
+        guard !event.hasRecurrenceRules, !event.isDetached else {
+            throw EventKitStoreError.refusingRecurringEvent(id)
+        }
+        return event
     }
 
     public func commit() throws {

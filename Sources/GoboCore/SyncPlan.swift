@@ -97,12 +97,14 @@ public struct SyncPlan: Codable, Sendable, Equatable {
         public var start: Date
         public var end: Date
         public var reason: DeleteReason
+        public var scope: DeleteScope
 
-        public init(mirrorID: String, start: Date, end: Date, reason: DeleteReason) {
+        public init(mirrorID: String, start: Date, end: Date, reason: DeleteReason, scope: DeleteScope = .single) {
             self.mirrorID = mirrorID
             self.start = start
             self.end = end
             self.reason = reason
+            self.scope = scope
         }
     }
 
@@ -131,6 +133,14 @@ public enum UpdateReason: String, Codable, Sendable, Hashable {
     case hasAlarms
 }
 
+/// Occurrences of a recurring series share one event identifier, so
+/// deleting "by id" is ambiguous there. Regular sync never touches recurring
+/// events on the target; only an explicit purge deletes whole series.
+public enum DeleteScope: String, Codable, Sendable, Hashable {
+    case single
+    case series
+}
+
 public enum DeleteReason: String, Codable, Sendable, Hashable {
     /// A marked event whose source no longer exists (or is now filtered out).
     case orphaned
@@ -150,6 +160,12 @@ public enum PlanWarning: Codable, Sendable, Hashable {
     /// exclusion offered as the fallback.
     case availabilityNotSupported(calendar: CalendarHandle)
     case sourceCalendarMissing(calendar: CalendarHandle)
+    /// Marked events on the target that belong to recurring series — the
+    /// user opened a mirror and made it repeat. Occurrences share one
+    /// identifier, so per-event writes cannot address them safely; sync
+    /// leaves the whole series alone. The user should delete the series
+    /// (or run Remove All Mirrors, which removes such series explicitly).
+    case recurringMirrorsIgnored(seriesCount: Int)
 }
 
 public enum PlanError: Error, Equatable, Sendable {

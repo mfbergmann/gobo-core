@@ -43,15 +43,22 @@ struct ValidationTests {
         #expect(!RuleValidator.validate(mirrorReader, against: [disabled]).isEmpty)
     }
 
-    @Test("Two rules may not mirror a shared source into the same target")
-    func overlappingRules() {
-        let existing = SyncRule(name: "A", sourceCalendars: [personal, medical], targetCalendar: work)
-        let overlapping = SyncRule(name: "B", sourceCalendars: [medical], targetCalendar: work)
+    @Test("Two rules may never share a target calendar, even with disjoint sources")
+    func duplicateTarget() {
+        let existing = SyncRule(name: "A", sourceCalendars: [personal], targetCalendar: work)
+        // Disjoint sources, same target: each rule's plan would orphan-delete
+        // the other's mirrors. Must be refused, not just discouraged.
+        let disjoint = SyncRule(name: "B", sourceCalendars: [medical], targetCalendar: work)
+        let issues = RuleValidator.validate(disjoint, against: [existing])
+        #expect(issues.contains(.duplicateTarget(otherRuleID: existing.id, calendar: work)))
+        #expect(issues.contains { $0.isError })
+        // Shared source, same target: also refused.
+        let overlapping = SyncRule(name: "C", sourceCalendars: [personal], targetCalendar: work)
         #expect(RuleValidator.validate(overlapping, against: [existing]).contains(
-            .overlappingRules(otherRuleID: existing.id, calendar: medical)
+            .duplicateTarget(otherRuleID: existing.id, calendar: work)
         ))
         // Different targets are fine.
-        let differentTarget = SyncRule(name: "C", sourceCalendars: [medical], targetCalendar: second)
+        let differentTarget = SyncRule(name: "D", sourceCalendars: [medical], targetCalendar: second)
         #expect(RuleValidator.validate(differentTarget, against: [existing]).isEmpty)
     }
 
