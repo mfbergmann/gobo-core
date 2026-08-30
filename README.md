@@ -18,7 +18,11 @@ life. Mirrors carry **no title, location, notes, or attendees** from the
 source — only a hashed identity marker.
 
 - The event's own **Busy/Free flag is the opt-in filter**: events marked Free
-  are not mirrored.
+  are not mirrored. Apple's Calendar app no longer exposes that switch for
+  iCloud events on the Mac, so `GoboKit` also provides the one deliberate
+  write Gobo ever makes to a source calendar: `setAvailability`, which flips
+  the flag on the user's own event (and nothing else — it refuses mirrors and
+  carries no content).
 - Travel buffers are baked into the single block, optionally only for events
   with a location.
 - Mirrors are identified by a `busysync:v1:<hash>` marker line in notes. The
